@@ -241,6 +241,17 @@ Two caveats, both handled:
   every path in `cursor-db.ts` returns null and layers 5–6 take over. This
   layer is an accuracy upgrade, never a requirement.
 
+### Data handling: what layer 4 reads from Cursor's database
+
+For Cursor Marketplace review: layer 4 opens Cursor's `state.vscdb`
+**read-only** — `node:sqlite` with `readOnly: true`, or `better-sqlite3`
+with `readonly: true, fileMustExist: true` — and runs a single-key lookup,
+`SELECT value FROM ItemTable WHERE key = 'composer.composerHeaders'`, to map
+a hook's `session_id` (the composerId) to its workspace path. It never writes
+to the database, never reads chat content, and never touches any other key.
+The connection is closed after the read, and a locked or half-migrated file
+just makes the layer return null so layers 5–6 take over.
+
 ### The slug encoding (layer 5)
 
 `~/.cursor/projects/` names one directory per workspace after the workspace
