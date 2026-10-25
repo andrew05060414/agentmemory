@@ -1433,7 +1433,6 @@ fi
 | کسٹم plugin سسٹمز | `iii worker add <name>` |
 
 **247 سورس فائلز · ~55,000 لائنز کوڈ · 3,800+ ٹیسٹس · 324 فنکشنز · 67 KV اسکوپس**، سب تین primitives پر۔ کوئی `agentmemory plugin install` نہیں۔ plugin سسٹم خود iii ہی ہے۔
-
 ---
 
 <h2 id="configuration"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-config.svg"><img src="../assets/tags/section-config.svg" alt="کنفیگریشن" height="32" /></picture></h2>

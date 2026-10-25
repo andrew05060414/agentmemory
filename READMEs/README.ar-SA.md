@@ -1440,7 +1440,6 @@ fi
 | أنظمة إضافات مخصصة | `iii worker add <name>` |
 
 **247 ملف مصدري · ~55,000 سطر برمجي · 3,800+ اختبار · 324 دالة · 67 نطاق KV**، كل ذلك على ثلاث بنى أساسية. لا يوجد أمر `agentmemory plugin install`. نظام الإضافات هو iii نفسه.
-
 ---
 
 <h2 id="configuration"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-config.svg"><img src="../assets/tags/section-config.svg" alt="Configuration" height="32" /></picture></h2>

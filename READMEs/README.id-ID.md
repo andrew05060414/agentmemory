@@ -1448,7 +1448,6 @@ fi
 | Sistem plugin custom | `iii worker add <name>` |
 
 **247 file sumber · ~55,000 LOC · 3,800+ pengujian · 324 fungsi · 67 scope KV**, semua di atas tiga primitif. Tidak ada `agentmemory plugin install`. Sistem plugin-nya adalah iii itu sendiri.
-
 ---
 
 <h2 id="configuration"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-config.svg"><img src="../assets/tags/section-config.svg" alt="Konfigurasi" height="32" /></picture></h2>

@@ -1449,7 +1449,6 @@ fi
 | Systèmes de plugins custom | `iii worker add <name>` |
 
 **247 fichiers sources · ~55,000 LOC · 3,800+ tests · 324 fonctions · 67 scopes KV**, tout sur trois primitives. Pas de `agentmemory plugin install`. Le système de plugins, c'est iii lui-même.
-
 ---
 
 <h2 id="configuration"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-config.svg"><img src="../assets/tags/section-config.svg" alt="Configuration" height="32" /></picture></h2>

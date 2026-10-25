@@ -1431,7 +1431,6 @@ fi
 | Sisteme de plugin-uri personalizate | `iii worker add <name>` |
 
 **247 de fișiere sursă · ~55,000 LOC · 3,800+ de teste · 324 de funcții · 67 de domenii KV**, toate pe trei primitive. Niciun `agentmemory plugin install`. Sistemul de plugin-uri este chiar iii.
-
 ---
 
 <h2 id="configuration"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-config.svg"><img src="../assets/tags/section-config.svg" alt="Configurare" height="32" /></picture></h2>

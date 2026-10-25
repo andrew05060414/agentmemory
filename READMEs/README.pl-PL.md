@@ -1447,7 +1447,6 @@ fi
 | Niestandardowe systemy pluginów | `iii worker add <name>` |
 
 **247 pliki źródłowe · ~55,000 LOC · 3,800+ testów · 324 funkcje · 67 zakresów KV**, wszystko na trzech prymitywach. Nie ma `agentmemory plugin install`. Systemem pluginów jest sam iii.
-
 ---
 
 <h2 id="configuration"><picture><source media="(prefers-color-scheme: dark)" srcset="../assets/tags/light/section-config.svg"><img src="../assets/tags/section-config.svg" alt="Konfiguracja" height="32" /></picture></h2>
