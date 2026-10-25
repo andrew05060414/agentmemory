@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import {
@@ -232,5 +232,59 @@ describe('cursor workspace resolver', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe('cursor workspace cache and aliases', () => {
+  let home: string;
+  let cachePath: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'am-cursor-cache-'));
+    cachePath = join(home, '.cursor/hooks/.agentmemory-session-cache.json');
+    mkdirSync(join(home, '.cursor/hooks'), { recursive: true });
+    vi.stubEnv('HOME', home); vi.stubEnv('USERPROFILE', home);
+    for (const key of ENV_KEYS) vi.stubEnv(key, '');
+    vi.stubEnv('AGENTMEMORY_PROJECT_NAME', ''); vi.resetModules();
+  });
+  afterEach(() => { vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }); });
+  it('expires a cached mapping on reads without waiting for another write', async () => {
+    const old = join(home, 'old'); const current = join(home, 'current');
+    mkdirSync(old); mkdirSync(current);
+    writeFileSync(cachePath, JSON.stringify({ session: { project: 'old', cwd: old, updatedAt: new Date(Date.now() - 8 * 86400000).toISOString() } }));
+    const { resolveWorkspace } = await import('../src/hooks/cursor/workspace.js');
+    expect(resolveWorkspace({ session_id: 'session', workspace_roots: [current] }).project).toBe('current');
+  });
+  it('caps the cache after inserting the new session', async () => {
+    const workspace = join(home, 'project'); mkdirSync(workspace);
+    const entry = { project: 'project', cwd: workspace, updatedAt: new Date(Date.now() - 1000).toISOString() };
+    writeFileSync(cachePath, JSON.stringify(Object.fromEntries(Array.from({ length: 200 }, (_, i) => ['old-' + i, entry]))));
+    const { resolveWorkspace } = await import('../src/hooks/cursor/workspace.js');
+    resolveWorkspace({ session_id: 'new', workspace_roots: [workspace] });
+    const cache = JSON.parse(readFileSync(cachePath, 'utf8'));
+    expect(Object.keys(cache)).toHaveLength(200); expect(cache.new.cwd).toBe(workspace);
+  });
+  it.each(['null', '[]', '{"session":null}'])('ignores malformed cache contents: %s', async raw => {
+    const workspace = join(home, 'project'); mkdirSync(workspace); writeFileSync(cachePath, raw);
+    const { resolveWorkspace } = await import('../src/hooks/cursor/workspace.js');
+    expect(resolveWorkspace({ session_id: 'session', workspace_roots: [workspace] }).project).toBe('project');
+  });
+  it('uses conversation_id for caching and toolArgs for workspace evidence', async () => {
+    const workspace = join(home, 'project'); mkdirSync(workspace); writeFileSync(join(workspace, 'file.ts'), '');
+    const { resolveWorkspace } = await import('../src/hooks/cursor/workspace.js');
+    expect(resolveWorkspace({ conversation_id: 'conversation', toolArgs: { path: join(workspace, 'file.ts') } }).project).toBe('project');
+    expect(resolveWorkspace({ conversation_id: 'conversation' }).cwd).toBe(workspace);
+  });
+  it('keeps shared project naming and explicit overrides across linked worktrees', async () => {
+    const repo = join(home, 'main-repo'); const worktree = join(home, 'other-checkout'); mkdirSync(repo);
+    execFileSync('git', ['init', '-q'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'fixture', '--allow-empty'], { cwd: repo });
+    execFileSync('git', ['worktree', 'add', '-q', '--detach', worktree], { cwd: repo });
+    const { enrichPayload } = await import('../src/hooks/cursor/delegate.js');
+    const data = { session_id: 'worktree', workspace_roots: [worktree] };
+    expect(enrichPayload(data).project).toBe('main-repo');
+    vi.stubEnv('AGENTMEMORY_PROJECT_NAME', 'configured'); expect(enrichPayload(data).project).toBe('configured');
+    expect(enrichPayload({ session_id: 'no-workspace' }).project).toBe('configured');
+    vi.stubEnv('AGENTMEMORY_PROJECT_NAME', ''); expect(enrichPayload(data).project).toBe('main-repo');
   });
 });

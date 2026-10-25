@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, symlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
-import { ENV_PATH, loadConfig } from './_env.mjs';
+import { loadConfig, requireConnection } from './_env.mjs';
 
 const INTEGRATION_ROOT = resolve(dirname(fileURLToPath(import.meta.url)));
 const REPO_ROOT = resolve(INTEGRATION_ROOT, '../..');
@@ -62,11 +61,7 @@ function requireObjectField(path, fieldName, value) {
 function linkMarketplace() {
   mkdirSync(dirname(MARKETPLACE_DIR), { recursive: true });
   if (!existsSync(MARKETPLACE_DIR)) {
-    if (process.platform === 'win32') {
-      execSync(`cmd /c mklink /J "${MARKETPLACE_DIR}" "${REPO_ROOT}"`, { stdio: 'inherit' });
-    } else {
-      execSync(`ln -s "${REPO_ROOT}" "${MARKETPLACE_DIR}"`, { stdio: 'inherit' });
-    }
+    symlinkSync(REPO_ROOT, MARKETPLACE_DIR, process.platform === 'win32' ? 'junction' : 'dir');
   }
 }
 
@@ -103,7 +98,16 @@ function mergeMcp(env) {
 }
 
 function isAgentmemoryHook(entry) {
-  return JSON.stringify(entry ?? '').includes('agentmemory');
+  if (typeof entry?.command !== 'string') return false;
+  const args = entry.command.match(/^\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s|$)/);
+  if (!args) return false;
+  const executable = (args[1] || args[2] || args[3]).replace(/\\/g, '/');
+  if (!/(?:^|\/)node(?:\.exe)?$/.test(executable)) return false;
+  const argument = args[4] || args[5] || args[6];
+  const script = (existsSync(argument) ? realpathSync(argument) : argument).replace(/\\/g, '/');
+  const roots = [REPO_ROOT.replace(/\\/g, '/'), '${CURSOR_PLUGIN_ROOT}'];
+  const hooks = ['session-start', 'prompt-submit', 'pre-tool-use', 'post-tool-use', 'post-tool-failure', 'pre-compact', 'subagent-start', 'subagent-stop', 'stop', 'session-end', 'cursor/run-hook', 'cursor/run-detached'];
+  return roots.some(root => hooks.some(hook => script === `${root}/plugin/scripts/${hook}.mjs`));
 }
 
 function disableUserHooks() {
@@ -140,11 +144,8 @@ function disableUserHooks() {
   return backup;
 }
 
-const env = loadConfig(['AGENTMEMORY_URL', 'AGENTMEMORY_SECRET', 'AGENTMEMORY_TOOLS']);
-if (!env.AGENTMEMORY_URL) {
-  console.error(`Missing AGENTMEMORY_URL. Set it in the environment or in ${ENV_PATH}.`);
-  process.exit(1);
-}
+const { url, secret } = requireConnection();
+const env = { ...loadConfig(['AGENTMEMORY_TOOLS']), AGENTMEMORY_URL: url, AGENTMEMORY_SECRET: secret };
 
 linkMarketplace();
 const mcpBackup = mergeMcp(env);
@@ -161,7 +162,7 @@ if (existsSync(LEGACY_MARKETPLACE_DIR)) {
 if (mcpBackup) console.log(`mcp.json backup: ${mcpBackup}`);
 if (hooksBackup) console.log(`hooks.json backup: ${hooksBackup}`);
 console.log(`AGENTMEMORY_URL: ${env.AGENTMEMORY_URL}`);
-console.log(`AGENTMEMORY_SECRET: ${env.AGENTMEMORY_SECRET ? '<set, not printed>' : '<empty, keyless daemon>'}`);
+console.log(`AGENTMEMORY_SECRET: ${env.AGENTMEMORY_SECRET ? '<set, not printed>' : '<not configured>'}`);
 console.log('\nNext steps:');
 console.log('1. Cursor → Settings → Plugins → Add marketplace from folder:');
 console.log(`   ${REPO_ROOT}`);

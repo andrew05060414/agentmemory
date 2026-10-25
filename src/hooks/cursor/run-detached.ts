@@ -31,7 +31,7 @@ function runWorker(): void {
 }
 
 async function runParent(): Promise<void> {
-  if (!hookKey) process.exit(0);
+  if (!isCursorHookKey(hookKey)) process.exit(0);
 
   const input = await readHookStdinComplete();
   const payloadFile = writeHookPayloadTemp(input);
@@ -63,5 +63,5 @@ async function runParent(): Promise<void> {
 if (IS_WORKER) {
   runWorker();
 } else {
-  void runParent();
+  void runParent().catch(() => process.exit(0));
 }

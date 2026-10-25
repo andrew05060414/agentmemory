@@ -11,8 +11,10 @@ work. Cursor gets a thin adapter in front of them, compiled from
 
 ## Quick local install
 
-Prereq: `AGENTMEMORY_URL` (and `AGENTMEMORY_SECRET` when the daemon sets one),
-in the environment or in `~/.agentmemory/.env`.
+Set `AGENTMEMORY_URL` in the environment or `~/.agentmemory/.env`. Loopback
+connections discover the local daemon secret automatically. For a remote daemon,
+use HTTPS and set `AGENTMEMORY_SECRET` in the runtime environment.
+`AGENTMEMORY_CREDENTIAL_MODE=explicit` disables local credential discovery.
 
 ```bash
 npm run build
@@ -31,7 +33,7 @@ Then in Cursor:
 5. Confirm the hooks log shows `plugin/scripts/cursor/run-hook.mjs` or `run-detached.mjs`
 
 Only after plugin hooks are confirmed, remove the old agentmemory entries from
-`~/.cursor/hooks.json` (other hooks are kept, and a backup is written):
+`~/.cursor/hooks.json` (only recognized AgentMemory script commands are removed, and a backup is written):
 
 ```bash
 node integrations/cursor/install-local.mjs --clear-user-hooks
@@ -106,7 +108,7 @@ knows nothing about Cursor.
 | Config shape | `[{hooks:[{type,command}]}]` | `[{command}]` |
 | Plugin root var | `${CLAUDE_PLUGIN_ROOT}` | `${CURSOR_PLUGIN_ROOT}` |
 | `preToolUse` matcher | `Edit\|Write\|Read\|Glob\|Grep` | …`\|Shell` (Cursor has a Shell tool) |
-| Session id field | `session_id` | `session_id` or `sessionId` |
+| Session id field | `session_id` | `session_id`, `sessionId` or `conversation_id` |
 | Working directory | reliable | **not reliable — see below** |
 
 The extra process hop costs about 100ms per synchronous hook (one additional
@@ -117,10 +119,10 @@ buys zero duplicated hook logic, which was the explicit trade.
 
 ### Why `stop` and `sessionEnd` are detached
 
-`sessionEnd` fans out to four daemon endpoints — session end, crystals,
-consolidate pipeline, bridge sync. Cursor kills its hook process tree when the
-window closes, so run inline that work is cut off halfway and the session's
-memories are lost.
+`sessionEnd` sends the canonical session-end request and optionally syncs the
+Claude bridge. Summarization and consolidation are managed by the daemon.
+The detached worker lets the hook finish submitting those requests after its
+parent exits; delivery still depends on the daemon and operating system.
 
 `run-detached.mjs` runs the same file twice in two roles. The parent reads
 stdin, writes the payload to a `0600` temp file, spawns itself with
@@ -165,15 +167,16 @@ filesystem or refuses to answer.
 
 ### The chain
 
-Layers are tried in order. `resolveWorkspace` caches the result under the
-session id, so the whole chain runs at most **once per session** — every
-later hook in that session is a single JSON read.
+Layers are tried in order. `resolveWorkspace` caches the workspace under the
+session id. Later hooks validate the entry and use the shared project resolver,
+so linked worktrees and `AGENTMEMORY_PROJECT_NAME` follow the same rules as
+other agents.
 
 | # | Layer | Basis | Notes |
 |---|---|---|---|
 | 1 | Session cache | previous answer | `~/.cursor/hooks/.agentmemory-session-cache.json`, written under a lock; entries expire after 7 days (max 200) and are ignored once their directory is gone |
 | 2 | Payload paths | `workspace_roots`, `workspace_folder`, `cwd`, … | eight aliases because Cursor is inconsistent; `cwd` is deliberately ranked low |
-| 3 | `tool_input` paths | any path-shaped string in the tool arguments | file paths resolve to their directory |
+| 3 | `tool_input` or `toolArgs` paths | any path-shaped string in the tool arguments | file paths resolve to their directory |
 | 4 | **Cursor's database** | `composer.composerHeaders` | exact, no inference — see below |
 | 5 | Transcript directory name | `~/.cursor/projects/<slug>/` | slug is the workspace path with separators flattened |
 | 6 | Transcript contents | most-mentioned git root | a guess; needs ≥3 votes |
@@ -246,9 +249,11 @@ Two caveats, both handled:
 For Cursor Marketplace review: layer 4 opens Cursor's `state.vscdb`
 **read-only** — `node:sqlite` with `readOnly: true`, or `better-sqlite3`
 with `readonly: true, fileMustExist: true` — and runs a single-key lookup,
-`SELECT value FROM ItemTable WHERE key = 'composer.composerHeaders'`, to map
-a hook's `session_id` (the composerId) to its workspace path. It never writes
-to the database, never reads chat content, and never touches any other key.
+`composer.composerHeaders` in global storage or `composer.composerData` in
+legacy workspace storage. These records map the session to a workspace; only
+that path is used. The adapter does not write the database or send its records
+to the daemon. Layer 6 separately reads a bounded transcript excerpt to infer
+a workspace when the metadata lookup fails.
 The connection is closed after the read, and a locked or half-migrated file
 just makes the layer return null so layers 5–6 take over.
 
@@ -304,15 +309,12 @@ regex on `$HOME`, which never matches a checkout on another drive.
 
 ## Known Cursor limitations
 
-* `sessionEnd` on window close is unreliable in Cursor 3.13.x
-  (`MainThreadShellExec not initialized`). `stop` is what the pipeline relies
-  on; `verify-flow.mjs` treats `sessionEnd` as diagnostic only and needs
-  `--with-session-end` to exercise it at all.
-* The daemon drops observations while it is busy — a `stop` leaves
-  `/summarize` running in the background, and observations posted into that
-  window can vanish. `verify-flow.mjs` retries with a varied `tool_input`,
-  because the dedup key is `(sessionId, tool_name, tool_input)` and a
-  byte-identical retry would be discarded as a duplicate.
+* `sessionEnd` on window close has been reported as unreliable in Cursor 3.13.x
+  (`MainThreadShellExec not initialized`). Run `verify-flow.mjs --with-session-end`
+  to verify the built hook's finalization request separately from native event
+  delivery. `stop` captures the reply and schedules idle finalization.
+* `verify-flow.mjs` sends one tool event and waits for it to appear. A successful
+  hook process exit alone does not prove delivery.
 
 ---
 
@@ -324,9 +326,9 @@ node integrations/cursor/verify-flow.mjs                                   # liv
 node integrations/cursor/close-stale-am-sessions.mjs --dry-run             # dev utility
 ```
 
-The unit tests are the authoritative check: they assert the delegation
-contract against a local HTTP server and stand-in hooks, and cover the
-resolver branches that were found misfiring on real sessions.
+The tests assert delegation against a local HTTP server and stand-in hooks.
+The live smoke test exercises the built hooks against a daemon. Cursor IDE
+window-close behavior still needs verification in the native host.
 
 One trap worth knowing if you extend them: **do not use `spawnSync`**.
 `spawnSync` blocks the caller's event loop, so an in-process HTTP server

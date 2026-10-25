@@ -209,6 +209,14 @@ describe("built shims against a local server", () => {
     AGENTMEMORY_SECRET: "test-secret",
   });
 
+  it.each([null, [], true])("ignores malformed hook payload %j without blocking Cursor", async payload => {
+    const before = server.captures.length;
+    const result = await runShim("run-hook.mjs", ["sessionStart"], payload, hookEnv());
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(server.captures).toHaveLength(before);
+  });
+
   it("run-hook delivers sessionStart with the resolved project", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "am-cursor-ws-"));
     const sessionId = uniqueId("shim-start");
@@ -231,7 +239,7 @@ describe("built shims against a local server", () => {
     rmSync(workspace, { recursive: true, force: true });
   }, 30000);
 
-  it("run-detached completes the work in its background worker", async () => {
+  it("run-detached delivers a large payload through its background worker", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "am-cursor-ws-"));
     const sessionId = uniqueId("shim-stop");
     const before = server.captures.length;
@@ -242,14 +250,14 @@ describe("built shims against a local server", () => {
     const { code } = await runShim(
       "run-detached.mjs",
       ["stop"],
-      { session_id: sessionId, workspace_roots: [workspace.replace(/\\/g, "/")] },
+      { session_id: sessionId, workspace_roots: [workspace.replace(/\\/g, "/")], padding: "x".repeat(200000) },
       hookEnv(),
     );
     expect(code).toBe(0);
 
     const hit = await waitForCapture(
       server.captures,
-      (c, ) =>
+      (c) =>
         server.captures.indexOf(c) >= before &&
         typeof c.body === "object" &&
         c.body !== null &&
@@ -257,6 +265,8 @@ describe("built shims against a local server", () => {
       30000,
     );
     expect(hit, "detached worker never reached the server").not.toBeNull();
+    expect(hit!.url).toBe("/agentmemory/session/end");
+    expect(hit!.body).toMatchObject({ sessionId, final: false });
     rmSync(workspace, { recursive: true, force: true });
   }, 45000);
 });

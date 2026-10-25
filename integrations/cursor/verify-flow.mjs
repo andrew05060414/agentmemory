@@ -11,8 +11,9 @@
  * healthy pipeline reports FAIL, too long and a broken one still has time to
  * look healthy. Polling for the state change is the only honest check.
  */
-import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { authHeader, requireConnection } from './_env.mjs';
@@ -40,6 +41,7 @@ function runHook(script, args, payload) {
 async function fetchSession(id) {
   const r = await fetch(`${url}/agentmemory/sessions`, {
     headers: authHeaders,
+    redirect: "error",
     signal: AbortSignal.timeout(30000)
   });
   if (!r.ok) throw new Error(`GET /agentmemory/sessions -> ${r.status}`);
@@ -66,7 +68,10 @@ if (!existsSync(join(CURSOR_SCRIPTS, 'run-hook.mjs'))) {
   process.exit(1);
 }
 
-const repoRootNorm = REPO_ROOT.replace(/\\/g, '/');
+const workspace = mkdtempSync(join(tmpdir(), 'am-cursor-verify-'));
+process.on('exit', () => rmSync(workspace, { recursive: true, force: true }));
+const repoRootNorm = workspace.replace(/\\/g, '/');
+const expectedProject = process.env.AGENTMEMORY_PROJECT_NAME?.trim() || basename(workspace);
 const sessionId = `cursor-plugin-verify-${Date.now()}`;
 const basePayload = {
   session_id: sessionId,
@@ -84,6 +89,7 @@ let livez;
 try {
   livez = await fetch(`${url}/agentmemory/livez`, {
     headers: authHeaders,
+    redirect: "error",
     signal: AbortSignal.timeout(15000)
   });
 } catch (e) {
@@ -109,79 +115,52 @@ console.log(`  shim exit ${r.status}${r.stderr ? ` (${r.stderr})` : ''}`);
 let w = await waitFor(sessionId, (s) => Boolean(s));
 record('session registered', w.ok, w.session ? `project=${w.session.project}` : 'never appeared');
 record(
-  'resolver picked the repo, not .cursor',
-  w.session?.project === 'agentmemory',
+  'resolver picked the test workspace, not .cursor',
+  w.session?.project === expectedProject,
   `got ${w.session?.project ?? '(none)'}`
 );
 
-// 2. postToolUse: an observation must land against that session.
-//
-//    Retried, because the daemon drops observations when it is busy -- a
-//    `stop` from an earlier run leaves /summarize working in the background,
-//    and observations posted into that window can vanish. The adapter's job
-//    ends at "emitted a correct POST" (test/cursor-adapter.test.ts asserts
-//    that deterministically against a local server); this step additionally
-//    checks the daemon actually recorded it, so it has to tolerate the
-//    daemon's own load. Each attempt varies tool_input: the dedup key is
-//    (sessionId, tool_name, tool_input), so a byte-identical retry would be
-//    discarded as a duplicate and could never succeed.
+// 2. One tool event must be recorded; a different retry would hide a lost event.
 console.log('\n[2/4] postToolUse');
-// Measured against a Tailscale-reachable daemon: roughly 15% of observations
-// are dropped, in bursts rather than independently -- three in a row is
-// normal, then thirty in a row land. The same rate applies when the canonical
-// hook is invoked directly, without this adapter, so it is a property of the
-// fire-and-forget hook contract plus a busy daemon, not of the Cursor path.
-// Retries therefore have to be spaced, not just repeated.
-const OBSERVE_ATTEMPTS = 4;
-for (let attempt = 1; attempt <= OBSERVE_ATTEMPTS; attempt++) {
-  if (attempt > 1) await sleep(attempt * 2000);
-  r = runHook('run-hook.mjs', ['postToolUse'], {
-    ...basePayload,
-    tool_name: 'Read',
-    tool_input: { path: join(REPO_ROOT, 'package.json'), attempt },
-    tool_output: `verify-flow smoke test (attempt ${attempt})`
-  });
-  console.log(`  attempt ${attempt}: shim exit ${r.status}${r.stderr ? ` (${r.stderr})` : ''}`);
-  if (r.status !== 0) break;
-  w = await waitFor(sessionId, (s) => (s.observationCount ?? 0) >= 1, 20000);
-  if (w.ok) break;
-  if (attempt < OBSERVE_ATTEMPTS) console.log('    not recorded yet -- daemon may be busy, retrying');
-}
-record(
-  'observation captured',
-  Boolean(w.ok),
-  w.ok ? `obs=${w.session?.observationCount ?? 0}` : `daemon never recorded it in ${OBSERVE_ATTEMPTS} attempts`
-);
+r = runHook('run-hook.mjs', ['postToolUse'], {
+  ...basePayload,
+  tool_name: 'Read',
+  tool_input: { path: join(REPO_ROOT, 'package.json') },
+  tool_output: 'verify-flow smoke test'
+});
+record('tool hook completed', r.status === 0, r.stderr);
+w = await waitFor(sessionId, (s) => (s.observationCount ?? 0) >= 1);
+record('observation captured', w.ok, `obs=${w.session?.observationCount ?? 0}`);
 
-// 3. stop: run-detached returns immediately, so the only meaningful signal is
-//    the session reaching a terminal state on the daemon afterwards.
+// Stop captures the reply and schedules idle finalization; it is not sessionEnd.
 console.log('\n[3/4] stop (detached)');
-r = runHook('run-detached.mjs', ['stop'], basePayload);
+const observationsBeforeStop = w.session?.observationCount ?? 0;
+r = runHook('run-detached.mjs', ['stop'], {
+  ...basePayload,
+  last_assistant_message: 'Cursor detached stop smoke test'
+});
 console.log(`  parent exit ${r.status}${r.stderr ? ` (${r.stderr})` : ''} (worker continues in background)`);
-w = await waitFor(sessionId, (s) => s.status === 'completed' || Boolean(s.endedAt));
+w = await waitFor(sessionId, (s) => (s.observationCount ?? 0) > observationsBeforeStop);
 record(
-  'detached worker closed the session',
-  w.ok,
-  `status=${w.session?.status ?? '?'} endedAt=${w.session?.endedAt ?? '(none)'}`
+  'detached worker captured the reply',
+  r.status === 0 && w.ok,
+  `obs=${w.session?.observationCount ?? 0}`
 );
 
-// 4. sessionEnd is opt-in and diagnostic only, for two reasons. Cursor 3.13.x
-//    frequently fails to fire it on window close ("MainThreadShellExec not
-//    initialized"), so `stop` is the hook the pipeline actually relies on --
-//    gating on it would report a Cursor bug as an adapter bug. And it fans out
-//    to /crystals/auto plus /consolidate-pipeline on the daemon, which is
-//    heavy enough that back-to-back smoke runs start losing observations to
-//    the resulting load. Running it by default makes this script flaky
-//    against itself.
+// Use a separate session so the stop hook cannot satisfy the sessionEnd check.
 if (process.argv.includes('--with-session-end')) {
-  console.log('\n[4/4] sessionEnd (diagnostic only)');
-  r = runHook('run-detached.mjs', ['sessionEnd'], { ...basePayload, reason: 'window_close' });
-  console.log(`  parent exit ${r.status}${r.stderr ? ` (${r.stderr})` : ''}`);
-  const final = await fetchSession(sessionId);
-  console.log(`  session: status=${final?.status ?? '?'} obs=${final?.observationCount ?? 0}`);
-  console.log('  (not a pass condition -- Cursor may never fire this on window close)');
+  console.log('\n[4/4] sessionEnd');
+  const endId = `${sessionId}-end`;
+  const payload = { ...basePayload, session_id: endId };
+  runHook('run-hook.mjs', ['sessionStart'], payload);
+  const started = await waitFor(endId, () => true);
+  record('sessionEnd fixture registered', started.ok);
+  r = runHook('run-detached.mjs', ['sessionEnd'], { ...payload, reason: 'window_close' });
+  record('sessionEnd worker spawned', r.status === 0, r.stderr);
+  const ended = await waitFor(endId, (s) => s.status === 'completed' || Boolean(s.endedAt));
+  record('sessionEnd closed its own session', ended.ok);
 } else {
-  console.log('\n[4/4] sessionEnd  skipped (pass --with-session-end to exercise it)');
+  console.log('\n[4/4] sessionEnd skipped (pass --with-session-end to exercise it)');
 }
 
 const failed = results.filter((x) => !x.ok);

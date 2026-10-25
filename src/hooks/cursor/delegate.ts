@@ -23,7 +23,7 @@ export const HOOK_MAP = {
 export type CursorHookKey = keyof typeof HOOK_MAP;
 
 export function isCursorHookKey(value: unknown): value is CursorHookKey {
-  return typeof value === "string" && value in HOOK_MAP;
+  return typeof value === "string" && Object.hasOwn(HOOK_MAP, value);
 }
 
 // stop/sessionEnd fan out to summarize + consolidate on the daemon side, so
@@ -48,12 +48,13 @@ export function enrichPayload(data: HookPayload): {
   project: string;
   payload: HookPayload;
 } {
-  const { project, cwd } = resolveWorkspace(data);
+  const { project: resolvedProject, cwd } = resolveWorkspace(data);
+  const project = process.env["AGENTMEMORY_PROJECT_NAME"]?.trim() || resolvedProject;
   return {
     project,
     payload: {
       ...data,
-      session_id: data["session_id"] ?? data["sessionId"],
+      session_id: data["session_id"] ?? data["sessionId"] ?? data["conversation_id"],
       cwd,
       project,
     },

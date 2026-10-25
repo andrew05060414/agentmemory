@@ -48,20 +48,24 @@ export function loadConfig(keys, path = ENV_PATH) {
   return out;
 }
 
-/**
- * loadConfig for the two keys every script needs. The URL is required; the
- * secret may be empty because a local daemon can run keyless.
- */
+/** Resolve local credentials without forwarding stored secrets to remote daemons. */
 export function requireConnection(path = ENV_PATH) {
-  const { AGENTMEMORY_URL: url, AGENTMEMORY_SECRET: secret } = loadConfig(
-    ['AGENTMEMORY_URL', 'AGENTMEMORY_SECRET'],
-    path
-  );
-  if (!url) {
-    console.error(`Missing AGENTMEMORY_URL. Set it in the environment or in ${path}.`);
-    process.exit(1);
+  const { AGENTMEMORY_URL: url } = loadConfig(['AGENTMEMORY_URL'], path);
+  if (!url) throw new Error(`Missing AGENTMEMORY_URL. Set it in the environment or in ${path}.`);
+  const parsed = new URL(url);
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('AGENTMEMORY_URL must use HTTP or HTTPS.');
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const local = host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  const usable = value => typeof value === 'string' && !value.trim().startsWith('${') ? value.trim() : '';
+  let secret = usable(process.env.AGENTMEMORY_SECRET);
+  if (!secret && local && process.env.AGENTMEMORY_CREDENTIAL_MODE !== 'explicit') {
+    secret = usable(parseEnvFile(path).AGENTMEMORY_SECRET);
+    if (!secret) {
+      try { secret = usable(readFileSync(join(homedir(), '.agentmemory/secret'), 'utf8')); } catch {}
+    }
   }
-  return { url, secret };
+  if (secret && !local && parsed.protocol !== 'https:') throw new Error('Remote daemon credentials require HTTPS.');
+  return { url: url.replace(/\/+$/, ''), secret };
 }
 
 /** Bearer header only when a secret is configured. */

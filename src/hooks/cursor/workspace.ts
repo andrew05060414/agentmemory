@@ -5,6 +5,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
   readdirSync,
   statSync,
@@ -13,7 +14,8 @@ import {
 } from "node:fs";
 import { execSync } from "node:child_process";
 import { dirname, join, basename } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { resolveProject as canonicalProject } from "../_project.js";
 import { workspaceFromCursorDb } from "./cursor-db.js";
 
 // Cursor does not hand hooks a trustworthy working directory: `cwd` can be
@@ -124,7 +126,8 @@ function withSessionCacheLock<T>(fn: () => T): T | undefined {
 
 function loadSessionCache(): SessionCache {
   try {
-    return JSON.parse(readFileSync(SESSION_CACHE_PATH, "utf-8")) as SessionCache;
+    const value: unknown = JSON.parse(readFileSync(SESSION_CACHE_PATH, "utf-8"));
+    return value && typeof value === "object" && !Array.isArray(value) ? value as SessionCache : {};
   } catch {
     return {};
   }
@@ -135,7 +138,7 @@ function loadSessionCache(): SessionCache {
 function pruneSessionCache(cache: SessionCache, now: number): SessionCache {
   const fresh = Object.entries(cache).filter(([, entry]) => {
     const updated = Date.parse(entry?.updatedAt ?? "");
-    return Number.isFinite(updated) && now - updated < SESSION_CACHE_MAX_AGE_MS;
+    return typeof entry?.project === "string" && typeof entry?.cwd === "string" && Number.isFinite(updated) && now - updated < SESSION_CACHE_MAX_AGE_MS;
   });
   fresh.sort((a, b) => Date.parse(b[1].updatedAt) - Date.parse(a[1].updatedAt));
   return Object.fromEntries(fresh.slice(0, SESSION_CACHE_MAX_ENTRIES));
@@ -146,8 +149,9 @@ function rememberSession(sessionId: string | undefined, project: string, cwd: st
   withSessionCacheLock(() => {
     try {
       const now = Date.now();
-      const cache = pruneSessionCache(loadSessionCache(), now);
-      cache[sessionId] = { project, cwd, updatedAt: new Date(now).toISOString() };
+      const previous = loadSessionCache();
+      delete previous[sessionId];
+      const cache = pruneSessionCache({ [sessionId]: { project, cwd, updatedAt: new Date(now).toISOString() }, ...previous }, now);
       const tmp = `${SESSION_CACHE_PATH}.${process.pid}.${Date.now()}.tmp`;
       writeFileSync(tmp, JSON.stringify(cache, null, 2));
       renameSync(tmp, SESSION_CACHE_PATH);
@@ -157,8 +161,8 @@ function rememberSession(sessionId: string | undefined, project: string, cwd: st
 
 function recallSession(sessionId: string | undefined): SessionCacheEntry | null {
   if (!sessionId) return null;
-  const cache = loadSessionCache();
-  return cache[sessionId] ?? null;
+  const cache = pruneSessionCache(loadSessionCache(), Date.now());
+  return Object.hasOwn(cache, sessionId) ? cache[sessionId]! : null;
 }
 
 // Absolute paths that belong to the OS rather than to any user project. A
@@ -184,6 +188,8 @@ const SYSTEM_PATH_PREFIXES = [
 
 function isSystemPath(value: string): boolean {
   const norm = normalizePathSlashes(value);
+  const temp = normalizePathSlashes(tmpdir()).replace(/\/$/, "");
+  if (norm.startsWith(`${temp}/`)) return false;
   return SYSTEM_PATH_PREFIXES.some((prefix) => norm.startsWith(prefix));
 }
 
@@ -195,11 +201,11 @@ function isCollectablePath(value: unknown): value is string {
   if (pathUnderHome(value)) return true;
   // Windows drive-absolute: HOME is regularly on C: while the checkout sits
   // on D:, so a HOME-only rule loses every cross-drive project.
-  if (/^[a-zA-Z]:[\\/]/.test(value)) return pathExists(value);
+  if (/^[a-zA-Z]:[\\/]/.test(value)) return true;
   // POSIX-absolute outside $HOME: containers (Codespaces, devcontainers)
   // check repos out at /workspaces/..., which a HOME-only rule silently
   // rejects. existingAncestor() and the git lookup downstream validate it.
-  if (value.startsWith("/")) return !isSystemPath(value) && pathExists(value);
+  if (value.startsWith("/")) return !isSystemPath(value);
   return false;
 }
 
@@ -263,6 +269,7 @@ function gitRootFromPath(targetPath: string): string {
     cwd: targetPath,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "ignore"],
+    timeout: 500,
   }).trim();
 }
 
@@ -282,33 +289,6 @@ function gitRootNearby(startPath: string): string | null {
   return null;
 }
 
-function cleanRepoName(dirPath: string): string {
-  const normalized = normalizePathSlashes(dirPath).replace(/\/+$/, "");
-  if (!normalized) return "unknown-project";
-
-  const claudeWt = normalized.match(/^(.*?)\/\.claude\/worktrees\/[^/]+$/i);
-  if (claudeWt?.[1]) return cleanRepoName(claudeWt[1]);
-
-  // Cursor names agent worktrees "<repo>-<4-8 char token>" under
-  // ~/.cursor/worktrees. Fold them back onto the repository so a background
-  // agent's memories land with the rest of that project's.
-  const cursorWt = normalized.match(/\/\.cursor\/worktrees\/([^/]+)$/i);
-  if (cursorWt?.[1]) {
-    const stripped = cursorWt[1].replace(/-[a-z0-9]{4,8}$/i, "");
-    return stripped || cursorWt[1];
-  }
-
-  const baseName = basename(normalized);
-  if (/^agent-[a-f0-9]{6,}$/i.test(baseName)) {
-    const parent = dirname(normalized);
-    if (parent && parent !== normalized && parent !== "." && parent !== "/") {
-      return cleanRepoName(parent);
-    }
-  }
-
-  const name = baseName.replace(/(-worktree-\d+|-worktree|-[a-f0-9]{7,40})$/i, "");
-  return name || "unknown-project";
-}
 
 interface ResolvedProject {
   name: string;
@@ -318,9 +298,9 @@ interface ResolvedProject {
 
 function projectFromPath(targetPath: string): ResolvedProject {
   try {
-    return { name: cleanRepoName(gitRootFromPath(targetPath)), fromGitRoot: true };
+    return { name: canonicalProject(gitRootFromPath(targetPath)), fromGitRoot: true };
   } catch {
-    return { name: cleanRepoName(targetPath), fromGitRoot: false };
+    return { name: canonicalProject(targetPath), fromGitRoot: false };
   }
 }
 
@@ -441,9 +421,13 @@ const TRANSCRIPT_PATH_PATTERNS = [
 function workspaceFromTranscriptFile(transcriptFile: string | null): string | null {
   if (!transcriptFile || !existsSync(transcriptFile)) return null;
 
-  const chunk = normalizePathSlashes(
-    readFileSync(transcriptFile, "utf-8").slice(0, TRANSCRIPT_SCAN_BYTES),
-  );
+  let chunk: string;
+  const fd = openSync(transcriptFile, "r");
+  try {
+    const buffer = Buffer.alloc(TRANSCRIPT_SCAN_BYTES);
+    const bytes = readSync(fd, buffer, 0, buffer.length, 0);
+    chunk = normalizePathSlashes(buffer.subarray(0, bytes).toString("utf8"));
+  } finally { closeSync(fd); }
   const counts = new Map<string, number>();
   const seen = new Set<string>();
 
@@ -564,7 +548,8 @@ export function readWorkerHookPayload(): Record<string, unknown> | null {
   }
   try {
     const raw = readFileSync(file, "utf-8");
-    return JSON.parse(raw) as Record<string, unknown>;
+    const value: unknown = JSON.parse(raw);
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
   } catch (err) {
     console.error("[agentmemory] failed to parse hook payload:", (err as Error).message);
     return null;
@@ -646,12 +631,12 @@ function debugLayer(layer: string, result: Workspace | null): Workspace | null {
 }
 
 export function resolveWorkspace(data: HookData): Workspace {
-  const sessionId = (data?.["session_id"] ?? data?.["sessionId"]) as string | undefined;
+  const sessionId = [data?.["session_id"], data?.["sessionId"], data?.["conversation_id"]].find((value): value is string => typeof value === "string" && Boolean(value.trim()));
   // A cached workspace that has since moved or been deleted is stale; fall
   // through so the current payload can replace it.
   const cached = recallSession(sessionId);
   if (cached?.cwd && !isBadPath(cached.cwd) && existingDirectory(cached.cwd)) {
-    return { project: cached.project, cwd: cached.cwd };
+    return { project: canonicalProject(cached.cwd), cwd: cached.cwd };
   }
 
   const payloadCandidates: unknown[] = [
@@ -668,7 +653,7 @@ export function resolveWorkspace(data: HookData): Workspace {
   const fromPayload = debugLayer("payload", resolveFromPathCandidates(payloadCandidates, sessionId));
   if (fromPayload) return fromPayload;
 
-  const toolPaths = collectPathStrings(data?.["tool_input"])
+  const toolPaths = collectPathStrings(data?.["tool_input"] ?? data?.["toolArgs"])
     .map(existingAncestor)
     .filter((p): p is string => Boolean(p) && !isIdeInstallPath(p));
   const fromTools = debugLayer("tool_input", resolveFromPathCandidates(toolPaths, sessionId));
