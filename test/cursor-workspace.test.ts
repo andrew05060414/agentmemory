@@ -275,6 +275,19 @@ describe('cursor workspace cache and aliases', () => {
     expect(resolveWorkspace({ conversation_id: 'conversation', toolArgs: { path: join(workspace, 'file.ts') } }).project).toBe('project');
     expect(resolveWorkspace({ conversation_id: 'conversation' }).cwd).toBe(workspace);
   });
+  it.each(['temporary', 'home'])('does not cache a generic ancestor of a missing %s tool path', async location => {
+    const root = location === 'temporary' ? tmpdir() : home;
+    const missing = join(root, `am-missing-${Date.now()}`, 'result.json');
+    const workspace = join(home, 'actual-project');
+    mkdirSync(workspace);
+    const { resolveWorkspace } = await import('../src/hooks/cursor/workspace.js');
+
+    expect(resolveWorkspace({ session_id: 'missing-tool', tool_input: { path: missing } }).project).toBe('unknown-project');
+    expect(resolveWorkspace({ session_id: 'missing-tool', workspace_roots: [workspace] }).project).toBe('actual-project');
+
+    vi.stubEnv('CURSOR_PROJECT_DIR', workspace);
+    expect(resolveWorkspace({ session_id: 'tool-with-env', toolArgs: { path: missing } }).project).toBe('actual-project');
+  });
   it('keeps shared project naming and explicit overrides across linked worktrees', async () => {
     const repo = join(home, 'main-repo'); const worktree = join(home, 'other-checkout'); mkdirSync(repo);
     execFileSync('git', ['init', '-q'], { cwd: repo });

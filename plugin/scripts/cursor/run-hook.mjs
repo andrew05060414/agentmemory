@@ -590,7 +590,7 @@ function resolveWorkspace(data) {
 		data?.["project_path"]
 	], sessionId));
 	if (fromPayload) return fromPayload;
-	const fromTools = debugLayer("tool_input", resolveFromPathCandidates(collectPathStrings(data?.["tool_input"] ?? data?.["toolArgs"]).map(existingAncestor).filter((p) => Boolean(p) && !isIdeInstallPath(p)), sessionId));
+	const fromTools = debugLayer("tool_input", resolveFromPathCandidates(collectPathStrings(data?.["tool_input"] ?? data?.["toolArgs"]).map(existingDirectory).filter((p) => Boolean(p) && !isIdeInstallPath(p)), sessionId));
 	if (fromTools) return fromTools;
 	if (sessionId) {
 		const fromDb = debugLayer("cursor-db", resolveFromPathCandidates([workspaceFromCursorDb(sessionId)], sessionId, { exact: true }));

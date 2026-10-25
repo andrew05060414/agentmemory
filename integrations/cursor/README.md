@@ -176,7 +176,7 @@ other agents.
 |---|---|---|---|
 | 1 | Session cache | previous answer | `~/.cursor/hooks/.agentmemory-session-cache.json`, written under a lock; entries expire after 7 days (max 200) and are ignored once their directory is gone |
 | 2 | Payload paths | `workspace_roots`, `workspace_folder`, `cwd`, … | eight aliases because Cursor is inconsistent; `cwd` is deliberately ranked low |
-| 3 | `tool_input` or `toolArgs` paths | any path-shaped string in the tool arguments | file paths resolve to their directory |
+| 3 | `tool_input` or `toolArgs` paths | existing paths in the tool arguments | file paths resolve to their directory; missing paths fall through |
 | 4 | **Cursor's database** | `composer.composerHeaders` | exact, no inference — see below |
 | 5 | Transcript directory name | `~/.cursor/projects/<slug>/` | slug is the workspace path with separators flattened |
 | 6 | Transcript contents | most-mentioned git root | a guess; needs ≥3 votes |

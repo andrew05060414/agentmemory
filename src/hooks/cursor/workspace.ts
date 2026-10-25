@@ -204,7 +204,7 @@ function isCollectablePath(value: unknown): value is string {
   if (/^[a-zA-Z]:[\\/]/.test(value)) return true;
   // POSIX-absolute outside $HOME: containers (Codespaces, devcontainers)
   // check repos out at /workspaces/..., which a HOME-only rule silently
-  // rejects. existingAncestor() and the git lookup downstream validate it.
+  // rejects. existingDirectory() and the git lookup downstream validate it.
   if (value.startsWith("/")) return !isSystemPath(value);
   return false;
 }
@@ -654,7 +654,7 @@ export function resolveWorkspace(data: HookData): Workspace {
   if (fromPayload) return fromPayload;
 
   const toolPaths = collectPathStrings(data?.["tool_input"] ?? data?.["toolArgs"])
-    .map(existingAncestor)
+    .map(existingDirectory)
     .filter((p): p is string => Boolean(p) && !isIdeInstallPath(p));
   const fromTools = debugLayer("tool_input", resolveFromPathCandidates(toolPaths, sessionId));
   if (fromTools) return fromTools;
